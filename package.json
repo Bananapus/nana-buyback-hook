@@ -23,7 +23,7 @@
     "@exhausted-pigeon/uniswap-v3-forge-quoter": "^1.0.1",
     "@openzeppelin/contracts": "^5.0.2",
     "@uniswap/v3-core": "1.0.2-solc-0.8-simulate",
-    "@uniswap/v3-periphery": "github:uniswap/v3-periphery#1.3"
+    "@uniswap/v3-periphery": "github:uniswap/v3-periphery#1.3.0"
   },
   "devDependencies": {
     "@sphinx-labs/plugins": "^0.32.2"
