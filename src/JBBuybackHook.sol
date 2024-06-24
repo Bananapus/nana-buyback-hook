@@ -630,12 +630,14 @@ contract JBBuybackHook is JBPermissioned, IJBBuybackHook {
         }
 
         // Burn the whole amount received.
-        CONTROLLER.burnTokensOf({
-            holder: address(this),
-            projectId: context.projectId,
-            tokenCount: amountReceived,
-            memo: ""
-        });
+        if (amountReceived != 0) {
+            CONTROLLER.burnTokensOf({
+                holder: address(this),
+                projectId: context.projectId,
+                tokenCount: amountReceived,
+                memo: ""
+            });
+        }
 
         // Return the amount we received/burned, which we will mint to the beneficiary later.
         emit Swap(context.projectId, amountToSwapWith, pool, amountReceived, msg.sender);
