@@ -156,20 +156,18 @@ contract JBBuybackHook is JBPermissioned, IJBBuybackHook {
         // Keep a reference to the amount to be used to swap (out of `totalPaid`).
         uint256 amountToSwapWith;
 
-        // Keep a reference to a flag indicating whether a quote was specified in the payment metadata.
-        bool quoteExists;
-
         // Scoped section to prevent stack too deep.
         {
-            bytes memory metadata;
-
             // The metadata ID is the first 4 bytes of this contract's address.
             bytes4 metadataId = JBMetadataResolver.getId("quote");
 
             // Unpack the quote specified by the payer/client (typically from the pool).
-            (quoteExists, metadata) = JBMetadataResolver.getDataFor(metadataId, context.metadata);
+            (bool quoteExists, bytes memory metadata) = JBMetadataResolver.getDataFor(metadataId, context.metadata);
             if (quoteExists) (amountToSwapWith, minimumSwapAmountOut) = abi.decode(metadata, (uint256, uint256));
         }
+
+        // If the amount to swap with is greater than the actual amount paid in, revert.
+        if (amountToSwapWith > totalPaid) revert InsufficientPayAmount();
 
         // If the payer/client did not specify an amount to use towards the swap, use the `totalPaid`.
         if (amountToSwapWith == 0) amountToSwapWith = totalPaid;
@@ -194,9 +192,6 @@ contract JBBuybackHook is JBPermissioned, IJBBuybackHook {
         // If the minimum amount of tokens from the swap exceeds the amount that paying the project directly would
         // yield, swap.
         if (tokenCountWithoutHook < minimumSwapAmountOut) {
-            // If the amount to swap with is greater than the actual amount paid in, revert.
-            if (amountToSwapWith > totalPaid) revert InsufficientPayAmount();
-
             // Keep a reference to a flag indicating whether the Uniswap pool will reference the project token first in
             // the pair.
             bool projectTokenIs0 = address(projectToken) < terminalToken;
@@ -208,10 +203,7 @@ contract JBBuybackHook is JBPermissioned, IJBBuybackHook {
                 hook: IJBPayHook(this),
                 amount: amountToSwapWith,
                 metadata: abi.encode(
-                    quoteExists,
-                    projectTokenIs0,
-                    totalPaid == amountToSwapWith ? 0 : totalPaid - amountToSwapWith,
-                    minimumSwapAmountOut
+                    projectTokenIs0, totalPaid == amountToSwapWith ? 0 : totalPaid - amountToSwapWith, minimumSwapAmountOut
                 )
             });
 
@@ -302,14 +294,19 @@ contract JBBuybackHook is JBPermissioned, IJBBuybackHook {
         }
 
         // Parse the metadata forwarded from the data hook.
-        (bool quoteExists, bool projectTokenIs0, uint256 amountToMintWith, uint256 minimumSwapAmountOut) =
-            abi.decode(context.hookMetadata, (bool, bool, uint256, uint256));
+        (bool projectTokenIs0, uint256 amountToMintWith, uint256 minimumSwapAmountOut) =
+            abi.decode(context.hookMetadata, (bool, uint256, uint256));
+
+        // If the token paid in isn't the native token, pull the amount to swap from the terminal.
+        if (context.forwardedAmount.token != JBConstants.NATIVE_TOKEN) {
+            IERC20(context.forwardedAmount.token).transferFrom(msg.sender, address(this), context.forwardedAmount.value);
+        }
 
         // Get a reference to the number of project tokens that was swapped for.
         uint256 exactSwapAmountOut = _swap(context, projectTokenIs0);
 
         // If the payer/client specified a minimum amount to receive, make sure the swap meets that minimum.
-        if (quoteExists && exactSwapAmountOut < minimumSwapAmountOut) revert SpecifiedSlippageExceeded();
+        if (exactSwapAmountOut < minimumSwapAmountOut) revert SpecifiedSlippageExceeded();
 
         // Get a reference to any terminal tokens which were paid in and are still held by this contract.
         uint256 terminalTokensInThisContract = context.forwardedAmount.token == JBConstants.NATIVE_TOKEN

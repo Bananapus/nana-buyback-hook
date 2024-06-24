@@ -206,7 +206,6 @@ contract Test_BuybackHook_Unit is Test {
             assertEq(
                 specificationsReturned[0].metadata,
                 abi.encode(
-                    true,
                     address(projectToken) < address(weth),
                     beforePayRecordedContext.amount.value - amountIn,
                     swapOutCount
@@ -286,7 +285,7 @@ contract Test_BuybackHook_Unit is Test {
             // the correct metadata,
             assertEq(
                 specificationsReturned[0].metadata,
-                abi.encode(false, address(projectToken) < address(weth), 0, twapAmountOut),
+                abi.encode(address(projectToken) < address(weth), 0, twapAmountOut),
                 "Wrong metadata returned in hook specification"
             );
             // and a weight of 0 to prevent additional minting from the terminal.
@@ -431,7 +430,6 @@ contract Test_BuybackHook_Unit is Test {
 
         // The metadata coming from `beforePayRecordedWith(...)`
         afterPayRecordedContext.hookMetadata = abi.encode(
-            true, // Use the specified quote.
             address(projectToken) < address(weth),
             0,
             tokenCount // The token count is used.
@@ -536,7 +534,6 @@ contract Test_BuybackHook_Unit is Test {
 
         // The metadata coming from `beforePayRecordedWith(...)`
         afterPayRecordedContext.hookMetadata = abi.encode(
-            true, // Use the specified quote.
             address(projectToken) < address(weth),
             0,
             twapQuote // The TWAP quote, which exceeds the token count, is used.
@@ -646,12 +643,7 @@ contract Test_BuybackHook_Unit is Test {
         afterPayRecordedContext.weight = twapQuote;
 
         // The metadata coming from `beforePayRecordedWith(...)`.
-        afterPayRecordedContext.hookMetadata = abi.encode(
-            true, // Use the specified quote.
-            address(projectToken) < address(weth),
-            0,
-            tokenCount
-        );
+        afterPayRecordedContext.hookMetadata = abi.encode(address(projectToken) < address(weth), 0, tokenCount);
 
         // Mock and expect the swap call.
         vm.mockCall(
@@ -699,6 +691,17 @@ contract Test_BuybackHook_Unit is Test {
             abi.encodeCall(
                 directory.isTerminalOf, (afterPayRecordedContext.projectId, IJBTerminal(address(multiTerminal)))
             )
+        );
+
+        // Mock and expect the transferFrom from the terminal to the hook
+        vm.mockCall(
+            address(randomTerminalToken),
+            abi.encodeCall(randomTerminalToken.transferFrom, (address(multiTerminal), address(hook), 1 ether)),
+            abi.encode(true)
+        );
+        vm.expectCall(
+            address(randomTerminalToken),
+            abi.encodeCall(randomTerminalToken.transferFrom, (address(multiTerminal), address(hook), 1 ether))
         );
 
         // Mock and expect the call to burn tokens from the hook.
@@ -758,12 +761,7 @@ contract Test_BuybackHook_Unit is Test {
         afterPayRecordedContext.weight = 1 ether; // weight - unused
 
         // The metadata coming from `beforePayRecordedWith(...)`.
-        afterPayRecordedContext.hookMetadata = abi.encode(
-            true, // Use the specified quote.
-            address(projectToken) < address(weth),
-            0,
-            tokenCount
-        );
+        afterPayRecordedContext.hookMetadata = abi.encode(address(projectToken) < address(weth), 0, tokenCount);
 
         // Mock the swap call reverting.
         vm.mockCallRevert(
@@ -838,10 +836,20 @@ contract Test_BuybackHook_Unit is Test {
 
         // The metadata coming from `beforePayRecordedWith(...)`.
         afterPayRecordedContext.hookMetadata = abi.encode(
-            false, // use quote
             address(otherRandomProjectToken) < address(randomTerminalToken),
             extraMint, // extra amount to mint with
             tokenCount
+        );
+
+        // Mock and expect the call to transferFrom to pull token from the terminal to the hook
+        vm.mockCall(
+            address(randomTerminalToken),
+            abi.encodeCall(randomTerminalToken.transferFrom, (address(multiTerminal), address(hook), tokenCount)),
+            abi.encode(true)
+        );
+        vm.expectCall(
+            address(randomTerminalToken),
+            abi.encodeCall(randomTerminalToken.transferFrom, (address(multiTerminal), address(hook), tokenCount))
         );
 
         // Mock the swap call reverting.
@@ -992,12 +1000,7 @@ contract Test_BuybackHook_Unit is Test {
         afterPayRecordedContext.weight = weight;
 
         // The metadata coming from `beforePayRecordedWith(...)`.
-        afterPayRecordedContext.hookMetadata = abi.encode(
-            false, // use quote
-            address(projectToken) < address(weth),
-            extraMint,
-            tokenCount
-        );
+        afterPayRecordedContext.hookMetadata = abi.encode(address(projectToken) < address(weth), extraMint, tokenCount);
 
         // Mock the swap call reverting.
         vm.mockCallRevert(
@@ -1009,7 +1012,7 @@ contract Test_BuybackHook_Unit is Test {
                     address(weth) < address(projectToken),
                     int256(tokenCount),
                     address(projectToken) < address(weth) ? TickMath.MAX_SQRT_RATIO - 1 : TickMath.MIN_SQRT_RATIO + 1,
-                    abi.encode(projectId, weth)
+                    abi.encode(projectId, JBConstants.NATIVE_TOKEN)
                 )
             ),
             abi.encode("no swap")
