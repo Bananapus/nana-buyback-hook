@@ -3,6 +3,7 @@ pragma solidity 0.8.23;
 
 import {IERC20} from "@openzeppelin/contracts/interfaces/IERC20.sol";
 import {IERC165} from "@openzeppelin/contracts/utils/introspection/ERC165.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {mulDiv} from "@prb/math/src/Common.sol";
 import {TickMath} from "@uniswap/v3-core/contracts/libraries/TickMath.sol";
 import {OracleLibrary} from "@uniswap/v3-periphery/contracts/libraries/OracleLibrary.sol";
@@ -35,6 +36,9 @@ import {IWETH9} from "./interfaces/external/IWETH9.sol";
 /// route.
 /// @dev Compatible with any `JBTerminal` and any project token that can be pooled on Uniswap v3.
 contract JBBuybackHook is JBPermissioned, IJBBuybackHook {
+    // A library that adds default safety checks to ERC20 functionality.
+    using SafeERC20 for IERC20;
+
     //*********************************************************************//
     // --------------------------- custom errors ------------------------- //
     //*********************************************************************//
@@ -272,6 +276,7 @@ contract JBBuybackHook is JBPermissioned, IJBBuybackHook {
         WETH = weth;
         DIRECTORY = directory;
         CONTROLLER = controller;
+        // slither-disable-next-line missing-zero-check
         UNISWAP_V3_FACTORY = factory;
         PROJECTS = controller.PROJECTS();
     }
@@ -299,10 +304,13 @@ contract JBBuybackHook is JBPermissioned, IJBBuybackHook {
 
         // If the token paid in isn't the native token, pull the amount to swap from the terminal.
         if (context.forwardedAmount.token != JBConstants.NATIVE_TOKEN) {
-            IERC20(context.forwardedAmount.token).transferFrom(msg.sender, address(this), context.forwardedAmount.value);
+            IERC20(context.forwardedAmount.token).safeTransferFrom(
+                msg.sender, address(this), context.forwardedAmount.value
+            );
         }
 
         // Get a reference to the number of project tokens that was swapped for.
+        // slither-disable-next-line reentrancy-events
         uint256 exactSwapAmountOut = _swap(context, projectTokenIs0);
 
         // Ensure swap satisfies payer/client minimum amount or calculated TWAP if payer/client did not specify.
@@ -322,6 +330,7 @@ contract JBBuybackHook is JBPermissioned, IJBBuybackHook {
             // If the token paid in wasn't the native token, grant the terminal permission to pull them back into its
             // balance.
             if (context.forwardedAmount.token != JBConstants.NATIVE_TOKEN) {
+                // slither-disable-next-line unused-return
                 IERC20(context.forwardedAmount.token).approve(msg.sender, terminalTokensInThisContract);
             }
 
@@ -329,7 +338,10 @@ contract JBBuybackHook is JBPermissioned, IJBBuybackHook {
             uint256 payValue =
                 context.forwardedAmount.token == JBConstants.NATIVE_TOKEN ? terminalTokensInThisContract : 0;
 
+            emit Mint(context.projectId, terminalTokensInThisContract, partialMintTokenCount, msg.sender);
+
             // Add the paid amount back to the project's balance in the terminal.
+            // slither-disable-next-line arbitrary-send-eth
             IJBMultiTerminal(msg.sender).addToBalanceOf{value: payValue}({
                 projectId: context.projectId,
                 token: context.forwardedAmount.token,
@@ -338,8 +350,6 @@ contract JBBuybackHook is JBPermissioned, IJBBuybackHook {
                 memo: "",
                 metadata: bytes("")
             });
-
-            emit Mint(context.projectId, terminalTokensInThisContract, partialMintTokenCount, msg.sender);
         }
 
         // Add the amount to mint to the leftover mint amount (avoiding stack too deep here).
@@ -347,6 +357,7 @@ contract JBBuybackHook is JBPermissioned, IJBBuybackHook {
 
         // Mint the calculated amount of tokens for the beneficiary, including any leftover amount.
         // This takes the reserved rate into account.
+        // slither-disable-next-line unused-return
         CONTROLLER.mintTokensOf({
             projectId: context.projectId,
             tokenCount: exactSwapAmountOut + partialMintTokenCount,
@@ -377,7 +388,7 @@ contract JBBuybackHook is JBPermissioned, IJBBuybackHook {
         if (terminalToken == JBConstants.NATIVE_TOKEN) WETH.deposit{value: amountToSendToPool}();
 
         // Transfer the token to the pool.
-        IERC20(terminalTokenWithWETH).transfer(msg.sender, amountToSendToPool);
+        IERC20(terminalTokenWithWETH).safeTransfer(msg.sender, amountToSendToPool);
     }
 
     /// @notice Set the pool to use for a given project and terminal token (the default for the project's token <->
@@ -560,6 +571,7 @@ contract JBBuybackHook is JBPermissioned, IJBBuybackHook {
         if (address(pool).code.length == 0) return 0;
 
         // If there is a contract at the address, try to get the pool's slot 0.
+        // slither-disable-next-line unused-return
         try pool.slot0() returns (uint160, int24, uint16, uint16, uint16, uint8, bool unlocked) {
             // If the pool hasn't been initialized, return an empty quote.
             if (!unlocked) return 0;
@@ -574,6 +586,7 @@ contract JBBuybackHook is JBPermissioned, IJBBuybackHook {
         uint256 twapSlippageTolerance = twapParams >> 128;
 
         // Keep a reference to the TWAP tick.
+        // slither-disable-next-line unused-return
         (int24 arithmeticMeanTick,) = OracleLibrary.consult(address(pool), twapWindow);
 
         // Get a quote based on this TWAP tick.
@@ -610,6 +623,7 @@ contract JBBuybackHook is JBPermissioned, IJBBuybackHook {
         IUniswapV3Pool pool = poolOf[context.projectId][terminalTokenWithWETH];
 
         // Try swapping.
+        // slither-disable-next-line reentrancy-events
         try pool.swap({
             recipient: address(this),
             zeroForOne: !projectTokenIs0,
@@ -626,6 +640,9 @@ contract JBBuybackHook is JBPermissioned, IJBBuybackHook {
             return 0;
         }
 
+        // Return the amount we received/burned, which we will mint to the beneficiary later.
+        emit Swap(context.projectId, amountToSwapWith, pool, amountReceived, msg.sender);
+
         // Burn the whole amount received.
         if (amountReceived != 0) {
             CONTROLLER.burnTokensOf({
@@ -635,8 +652,5 @@ contract JBBuybackHook is JBPermissioned, IJBBuybackHook {
                 memo: ""
             });
         }
-
-        // Return the amount we received/burned, which we will mint to the beneficiary later.
-        emit Swap(context.projectId, amountToSwapWith, pool, amountReceived, msg.sender);
     }
 }
