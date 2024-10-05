@@ -18,7 +18,7 @@
     "artifacts": "source ./.env && npx sphinx artifacts --org-id 'my-org-id' --project-name 'nana-buyback-hook-testnet'"
   },
   "dependencies": {
-    "@bananapus/core": "^0.0.32",
+    "@bananapus/core": "^0.0.33",
     "@bananapus/permission-ids": "^0.0.12",
     "@exhausted-pigeon/uniswap-v3-forge-quoter": "^1.0.2",
     "@openzeppelin/contracts": "^5.0.2",
