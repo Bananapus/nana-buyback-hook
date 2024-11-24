@@ -7,10 +7,12 @@ import {IJBPayHook} from "@bananapus/core/src/interfaces/IJBPayHook.sol";
 import {IJBPrices} from "@bananapus/core/src/interfaces/IJBPrices.sol";
 import {IJBProjects} from "@bananapus/core/src/interfaces/IJBProjects.sol";
 import {IJBRulesetDataHook} from "@bananapus/core/src/interfaces/IJBRulesetDataHook.sol";
+import {IJBToken} from "@bananapus/core/src/interfaces/IJBToken.sol";
 import {IUniswapV3Pool} from "@uniswap/v3-core/contracts/interfaces/IUniswapV3Pool.sol";
 import {IUniswapV3SwapCallback} from "@uniswap/v3-core/contracts/interfaces/callback/IUniswapV3SwapCallback.sol";
 
 import {IWETH9} from "./external/IWETH9.sol";
+import {JBVestedBuybackClaims} from "../structs/JBVestedBuybackClaims.sol";
 
 interface IJBBuybackHook is IJBPayHook, IJBRulesetDataHook, IUniswapV3SwapCallback {
     event Swap(
@@ -18,10 +20,19 @@ interface IJBBuybackHook is IJBPayHook, IJBRulesetDataHook, IUniswapV3SwapCallba
     );
     event Mint(uint256 indexed projectId, uint256 leftoverAmount, uint256 tokenCount, address caller);
     event PoolAdded(uint256 indexed projectId, address indexed terminalToken, address pool, address caller);
+    event StartVestingBuyback(
+        uint256 indexed projectId,
+        address indexed beneficiary,
+        uint256 amount,
+        uint256 startsAt,
+        uint256 endsAt,
+        address caller
+    );
     event TwapWindowChanged(uint256 indexed projectId, uint256 oldWindow, uint256 newWindow, address caller);
     event TwapSlippageToleranceChanged(
         uint256 indexed projectId, uint256 oldTolerance, uint256 newTolerance, address caller
     );
+    event ClaimVestedBuybacks(IJBToken indexed token, address indexed beneficiary, uint256 amount, address caller);
 
     function CONTROLLER() external view returns (IJBController);
     function DIRECTORY() external view returns (IJBDirectory);
@@ -34,12 +45,29 @@ interface IJBBuybackHook is IJBPayHook, IJBRulesetDataHook, IUniswapV3SwapCallba
     function PROJECTS() external view returns (IJBProjects);
     function UNISWAP_V3_FACTORY() external view returns (address);
     function WETH() external view returns (IWETH9);
+    function VESTING_PERIOD() external view returns (uint256);
 
     function poolOf(uint256 projectId, address terminalToken) external view returns (IUniswapV3Pool pool);
     function projectTokenOf(uint256 projectId) external view returns (address projectTokenOf);
     function twapSlippageToleranceOf(uint256 projectId) external view returns (uint256 slippageTolerance);
     function twapWindowOf(uint256 projectId) external view returns (uint32 window);
+    function claimableVestedBuybacksFor(
+        IJBToken token,
+        address beneficiary,
+        uint256 count
+    )
+        external
+        view
+        returns (uint256 total);
 
+    function claimVestedBuybacksFor(JBVestedBuybackClaims[] calldata claims) external;
+    function claimVestedBuybacksFor(
+        IJBToken token,
+        address beneficiary,
+        uint256 count
+    )
+        external
+        returns (uint256 amount);
     function setPoolFor(
         uint256 projectId,
         uint24 fee,
