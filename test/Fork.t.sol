@@ -380,12 +380,13 @@ contract TestJBBuybackHook_Fork is TestBaseWorkflow, JBTest, UniswapV3ForgeQuote
         );
 
         // Check: token received by the multisig()
-        assertApproxEqAbs(
-            jbx.balanceOf(multisig()) - _balBeforePayment,
-            _amountOutQuoted - (_amountOutQuoted * _reservedPercent / 10_000),
-            1,
-            "wrong balance"
-        );
+        // rm vesting:assertApproxEqAbs(
+        //     jbx.balanceOf(multisig()) - _balBeforePayment,
+        //     _amountOutQuoted - (_amountOutQuoted * _reservedPercent / 10_000),
+        //     1,
+        //     "wrong balance"
+        // );
+        assertApproxEqAbs(jbx.balanceOf(multisig()) - _balBeforePayment, 0, 1, "wrong balance");
 
         // Check: token added to the reserve - 1 wei sensitivity for rounding errors
         assertApproxEqAbs(
@@ -467,7 +468,8 @@ contract TestJBBuybackHook_Fork is TestBaseWorkflow, JBTest, UniswapV3ForgeQuote
         );
 
         // Check: token received by the multisig()
-        assertEq(jbx.balanceOf(multisig()), _balanceBene + amountOutQuoted / 2);
+        // rm vesting:assertEq(jbx.balanceOf(multisig()), _balanceBene + amountOutQuoted / 2);
+        assertEq(jbx.balanceOf(multisig()), 0);
 
         // Check: token added to the reserve - 1 wei sensitivity for rounding errors
         assertApproxEqAbs(jbController().pendingReservedTokenBalanceOf(1), _reserveBalance + amountOutQuoted / 2, 1);
@@ -523,7 +525,8 @@ contract TestJBBuybackHook_Fork is TestBaseWorkflow, JBTest, UniswapV3ForgeQuote
         uint256 _diff = _balAfterPayment - _balBeforePayment;
 
         // Check: token received by the multisig()
-        assertEq(_diff, _quote);
+        // rm vesting: assertEq(_diff, _quote);
+        assertEq(_diff, 0);
 
         // Check: reserve unchanged
         assertEq(jbController().pendingReservedTokenBalanceOf(1), _reservedBalanceBefore);
@@ -579,7 +582,9 @@ contract TestJBBuybackHook_Fork is TestBaseWorkflow, JBTest, UniswapV3ForgeQuote
         // 1 wei sensitivity for rounding errors
         if (_twap > _tokenCount) {
             // Path is picked based on twap, but the token received are the one quoted
-            assertApproxEqAbs(_tokenReceived, _quote - (_quote * _reservedPercent) / 10_000, 1, "wrong swap");
+            // rm for vesting: assertApproxEqAbs(_tokenReceived, _quote - (_quote * _reservedPercent) / 10_000, 1,
+            // "wrong swap");
+            assertApproxEqAbs(_tokenReceived, 0, 1, "wrong swap");
             assertApproxEqAbs(
                 jbController().pendingReservedTokenBalanceOf(1),
                 _reservedBalanceBefore + (_quote * _reservedPercent) / 10_000,
@@ -725,11 +730,12 @@ contract TestJBBuybackHook_Fork is TestBaseWorkflow, JBTest, UniswapV3ForgeQuote
         );
 
         // Check: token received by the multisig()
-        assertApproxEqAbs(
-            jbx.balanceOf(multisig()) - _balBeforePayment,
-            amountOutQuoted / 2 + mulDiv18(_amountInExtra, _weight) / 2,
-            10
-        );
+        // rm vesting: assertApproxEqAbs(
+        //     jbx.balanceOf(multisig()) - _balBeforePayment,
+        //     amountOutQuoted / 2 + mulDiv18(_amountInExtra, _weight) / 2,
+        //     10
+        // );
+        assertApproxEqAbs(jbx.balanceOf(multisig()) - _balBeforePayment, 0, 10);
 
         // Check: token added to the reserve
         assertApproxEqAbs(

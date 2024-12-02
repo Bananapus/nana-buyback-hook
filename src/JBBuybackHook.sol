@@ -11,6 +11,7 @@ import {IJBPrices} from "@bananapus/core/src/interfaces/IJBPrices.sol";
 import {IJBProjects} from "@bananapus/core/src/interfaces/IJBProjects.sol";
 import {IJBRulesetDataHook} from "@bananapus/core/src/interfaces/IJBRulesetDataHook.sol";
 import {IJBTerminal} from "@bananapus/core/src/interfaces/IJBTerminal.sol";
+import {IJBToken} from "@bananapus/core/src/interfaces/IJBToken.sol";
 import {JBConstants} from "@bananapus/core/src/libraries/JBConstants.sol";
 import {JBMetadataResolver} from "@bananapus/core/src/libraries/JBMetadataResolver.sol";
 import {JBRulesetMetadataResolver} from "@bananapus/core/src/libraries/JBRulesetMetadataResolver.sol";
@@ -31,6 +32,8 @@ import {JBPermissionIds} from "@bananapus/permission-ids/src/JBPermissionIds.sol
 
 import {IJBBuybackHook} from "./interfaces/IJBBuybackHook.sol";
 import {IWETH9} from "./interfaces/external/IWETH9.sol";
+import {JBVestedBuybackClaims} from "./structs/JBVestedBuybackClaims.sol";
+import {JBVestingBuyback} from "./structs/JBVestingBuyback.sol";
 
 /// @custom:benediction DEVS BENEDICAT ET PROTEGAT CONTRACTVS MEAM
 /// @notice The buyback hook allows beneficiaries of a payment to a project to either:
@@ -52,6 +55,7 @@ contract JBBuybackHook is JBPermissioned, IJBBuybackHook {
 
     error JBBuybackHook_CallerNotPool(address caller);
     error JBBuybackHook_InsufficientPayAmount(uint256 swapAmount, uint256 totalPaid);
+    error JBBuybackHook_IndexOutOfBounds(uint256 index, uint256 numberOfVestingBuybacks);
     error JBBuybackHook_InvalidTwapSlippageTolerance(uint256 value, uint256 min, uint256 max);
     error JBBuybackHook_InvalidTwapWindow(uint256 value, uint256 min, uint256 max);
     error JBBuybackHook_PoolAlreadySet(IUniswapV3Pool pool);
@@ -84,6 +88,9 @@ contract JBBuybackHook is JBPermissioned, IJBBuybackHook {
 
     /// @notice The denominator used when calculating TWAP slippage percent values.
     uint256 public constant override TWAP_SLIPPAGE_DENOMINATOR = 10_000;
+
+    /// @notice The duration of the vesting period.
+    uint256 public constant override VESTING_PERIOD = 180 days;
 
     //*********************************************************************//
     // -------------------- public immutable properties ------------------ //
@@ -130,6 +137,11 @@ contract JBBuybackHook is JBPermissioned, IJBBuybackHook {
     /// @dev This includes the TWAP slippage tolerance and TWAP window, packed into a `uint256`.
     /// @custom:param projectId The ID of the project to get the twap parameters for.
     mapping(uint256 projectId => uint256) internal _twapParamsOf;
+
+    /// @notice The buybacks that are vesting to each beneficiary.
+    /// @custom:param token The token which the buybacks apply to.
+    /// @custom:param beneficiary The address which the buybacks belong to.
+    mapping(address token => mapping(address beneficiary => JBVestingBuyback[])) internal _vestingBuybacksFor;
 
     //*********************************************************************//
     // ---------------------------- constructor -------------------------- //
@@ -261,7 +273,10 @@ contract JBBuybackHook is JBPermissioned, IJBBuybackHook {
                 hook: IJBPayHook(this),
                 amount: amountToSwapWith,
                 metadata: abi.encode(
-                    projectTokenIs0, totalPaid == amountToSwapWith ? 0 : totalPaid - amountToSwapWith, minimumSwapAmountOut
+                    projectTokenIs0,
+                    totalPaid == amountToSwapWith ? 0 : totalPaid - amountToSwapWith,
+                    minimumSwapAmountOut,
+                    projectToken
                 )
             });
 
@@ -404,11 +419,13 @@ contract JBBuybackHook is JBPermissioned, IJBBuybackHook {
         }
 
         // Parse the metadata forwarded from the data hook.
-        (bool projectTokenIs0, uint256 amountToMintWith, uint256 minimumSwapAmountOut) =
-            abi.decode(context.hookMetadata, (bool, uint256, uint256));
+        (bool projectTokenIs0, uint256 amountToMintWith, uint256 minimumSwapAmountOut, address token) =
+            abi.decode(context.hookMetadata, (bool, uint256, uint256, address));
 
         // If the token paid in isn't the native token, pull the amount to swap from the terminal.
+        uint256 balanceBefore = 0;
         if (context.forwardedAmount.token != JBConstants.NATIVE_TOKEN) {
+            balanceBefore = IERC20(context.forwardedAmount.token).balanceOf(address(this));
             IERC20(context.forwardedAmount.token).safeTransferFrom(
                 msg.sender, address(this), context.forwardedAmount.value
             );
@@ -426,7 +443,7 @@ contract JBBuybackHook is JBPermissioned, IJBBuybackHook {
         // Get a reference to any terminal tokens which were paid in and are still held by this contract.
         uint256 leftoverAmountInThisContract = context.forwardedAmount.token == JBConstants.NATIVE_TOKEN
             ? address(this).balance
-            : IERC20(context.forwardedAmount.token).balanceOf(address(this));
+            : IERC20(context.forwardedAmount.token).balanceOf(address(this)) - balanceBefore;
 
         // Get a reference to the ruleset.
         // slither-disable-next-line unused-return
@@ -483,16 +500,56 @@ contract JBBuybackHook is JBPermissioned, IJBBuybackHook {
         // Add the amount to mint to the leftover mint amount.
         partialMintTokenCount += mulDiv(amountToMintWith, context.weight, weightRatio);
 
-        // Mint the calculated amount of tokens for the beneficiary, including any leftover amount.
+        // Mint the total amount of tokens to be vested to this contract.
         // This takes the reserved rate into account.
         // slither-disable-next-line unused-return
-        CONTROLLER.mintTokensOf({
+        uint256 amountToVest = CONTROLLER.mintTokensOf({
             projectId: context.projectId,
             tokenCount: exactSwapAmountOut + partialMintTokenCount,
-            beneficiary: address(context.beneficiary),
+            beneficiary: address(this),
             memo: "",
             useReservedPercent: true
         });
+
+        // Keep a reference to the array of vesting buybacks for the beneficiary.
+        JBVestingBuyback[] storage vestingBuybacks = _vestingBuybacksFor[token][context.beneficiary];
+
+        // Compute the end time of the vesting period.
+        uint256 endsAt = block.timestamp + VESTING_PERIOD;
+
+        // Add the calculated amount of tokens to be vested for the beneficiary, including any leftover amount.
+        // This takes the reserved rate into account.
+        // slither-disable-next-line unused-return
+        vestingBuybacks.push(
+            JBVestingBuyback({
+                amount: uint160(amountToVest),
+                lastClaimedAt: uint48(block.timestamp),
+                endsAt: uint48(endsAt)
+            })
+        );
+
+        emit StartVestingBuyback({
+            projectId: context.projectId,
+            beneficiary: context.beneficiary,
+            index: vestingBuybacks.length - 1,
+            amount: amountToVest,
+            startsAt: block.timestamp,
+            endsAt: endsAt,
+            caller: msg.sender
+        });
+    }
+
+    /// @notice Claim multiple vested buybacks for multiple beneficiaries.
+    /// @param claims An array of `JBVestedBuybackClaims` structs, each representing a buyback to claim.
+    function claimVestedBuybacksFor(JBVestedBuybackClaims[] calldata claims) external {
+        // Keep a reference to the buyback being iterated on.
+        JBVestedBuybackClaims memory claim;
+
+        // Iterate over the claims and mint the tokens for the beneficiary.
+        for (uint256 i; i < claims.length; i++) {
+            claim = claims[i];
+            claimVestedBuybacksFor({token: claim.token, beneficiary: claim.beneficiary, indices: claim.indices});
+        }
     }
 
     /// @notice Set the pool to use for a given project and terminal token (the default for the project's token <->
@@ -690,6 +747,69 @@ contract JBBuybackHook is JBPermissioned, IJBBuybackHook {
 
         // Transfer the token to the pool.
         IERC20(terminalTokenWithWETH).safeTransfer(msg.sender, amountToSendToPool);
+    }
+
+    //*********************************************************************//
+    // ----------------------- public transactions ----------------------- //
+    //*********************************************************************//
+
+    /// @notice Claim all vested buybacks for a beneficiary.
+    /// @param token The token to claim the vested buybacks of.
+    /// @param beneficiary The address which the buybacks belong to.
+    /// @param indices The indices of the buybacks to claim.
+    /// @return amount The total number of tokens claimed.
+    function claimVestedBuybacksFor(
+        address token,
+        address beneficiary,
+        uint256[] memory indices
+    )
+        public
+        returns (uint256 amount)
+    {
+        // Get a reference to the number of buybacks for the beneficiary.
+        uint256 numberOfBuybacks = _vestingBuybacksFor[token][beneficiary].length;
+
+        // Keep a reference to the buyback being iterated on.
+        JBVestingBuyback memory buyback;
+
+        // Iterate over the buybacks and sum the vested amounts.
+        for (uint256 i; i < indices.length; i++) {
+            // Get a reference to the index of the buyback to claim.
+            uint256 index = indices[i];
+
+            // Make sure the index is within bounds.
+            if (index >= numberOfBuybacks) revert JBBuybackHook_IndexOutOfBounds(index, numberOfBuybacks);
+
+            // Get a reference to the buyback.
+            buyback = _vestingBuybacksFor[token][beneficiary][index];
+
+            // If the buyback has no amount, skip it.
+            if (buyback.amount == 0) continue;
+
+            // Get a reference to the vested amount.
+            uint256 vestedAmount = block.timestamp >= buyback.endsAt
+                ? buyback.amount
+                : mulDiv(buyback.amount, block.timestamp - buyback.lastClaimedAt, buyback.endsAt - buyback.lastClaimedAt);
+
+            // Add the vested amount to the total amount claimed.
+            amount += vestedAmount;
+
+            // If the buyback hasn't been fully vested, update the buyback's amount and last claimed at.
+            _vestingBuybacksFor[token][beneficiary][index].amount -= uint160(vestedAmount);
+            _vestingBuybacksFor[token][beneficiary][index].lastClaimedAt = uint48(block.timestamp);
+
+            emit ClaimVestedBuybacks({
+                token: token,
+                beneficiary: beneficiary,
+                index: index,
+                amountVested: vestedAmount,
+                amountLeft: buyback.amount - uint160(vestedAmount),
+                caller: msg.sender
+            });
+        }
+
+        // Transfer the tokens to the beneficiary.
+        IERC20(address(token)).safeTransfer({to: beneficiary, value: amount});
     }
 
     //*********************************************************************//
